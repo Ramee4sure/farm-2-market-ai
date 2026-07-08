@@ -20,7 +20,7 @@ def normalize_state(raw: str) -> str:
 
 # 2. Classifier Agent & Router Node
 classifier_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='classifier_agent',
     instruction=(
         "Analyze the user's input query. If the query is related to selling crops, "
@@ -43,7 +43,7 @@ async def classify_and_route(ctx: Context, node_input: Any) -> Event:
 
 # 3. Decline Agent to politely decline unrelated/suspicious queries
 decline_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='decline_agent',
     instruction=(
         "You are an agricultural market advisor for Nigerian farmers. "
@@ -62,7 +62,7 @@ class FarmerInput(BaseModel):
 
 
 farmer_input_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='farmer_input_agent',
     instruction=(
         "Extract the crop, state, and approximate quantity from the user conversation. "
@@ -73,7 +73,7 @@ farmer_input_agent = Agent(
 
 # 5. Input Validator Node (and validation agent to detect instruction overrides)
 input_validator_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='input_validator_agent',
     instruction=(
         "Analyze the user's original query and the extracted crop and state. "
@@ -153,13 +153,15 @@ mcp_toolset = McpToolset(
 )
 
 market_data_tool = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='market_data_tool',
     instruction=(
         "You are a market database access assistant. "
         "Your task is to fetch the price of the crop in the given state. "
         "You must call the get_market_price tool with the exact crop and state names. "
-        "Do not answer the user directly. Just output the result of the tool call exactly as it is returned."
+        "After receiving the tool result, you MUST output a final text response "
+        "containing the exact JSON result of the tool call. Always produce text output, "
+        "never end your turn without writing out the tool result as text."
     ),
     tools=[mcp_toolset],
     include_contents='none',
@@ -180,7 +182,7 @@ def get_recommendation_instruction(ctx: ReadonlyContext) -> str:
     )
 
 recommendation_agent = Agent(
-    model='gemini-2.0-flash',
+    model='gemini-2.5-flash',
     name='recommendation_agent',
     instruction=get_recommendation_instruction,
 )
