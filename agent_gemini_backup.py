@@ -20,7 +20,7 @@ def normalize_state(raw: str) -> str:
 
 # 2. Classifier Agent & Router Node
 classifier_agent = Agent(
-    model='gemma-4-26b-a4b-it',
+    model='gemini-2.5-flash',
     name='classifier_agent',
     instruction=(
         "Analyze the user's input query. If the query is related to selling crops, "
@@ -43,7 +43,7 @@ async def classify_and_route(ctx: Context, node_input: Any) -> Event:
 
 # 3. Decline Agent to politely decline unrelated/suspicious queries
 decline_agent = Agent(
-    model='gemma-4-26b-a4b-it',
+    model='gemini-2.5-flash',
     name='decline_agent',
     instruction=(
         "You are an agricultural market advisor for Nigerian farmers. "
@@ -62,7 +62,7 @@ class FarmerInput(BaseModel):
 
 
 farmer_input_agent = Agent(
-    model='gemma-4-26b-a4b-it',
+    model='gemini-2.5-flash',
     name='farmer_input_agent',
     instruction=(
         "Extract the crop, state, and approximate quantity from the user conversation. "
@@ -73,7 +73,7 @@ farmer_input_agent = Agent(
 
 # 5. Input Validator Node (and validation agent to detect instruction overrides)
 input_validator_agent = Agent(
-    model='gemma-4-26b-a4b-it',
+    model='gemini-2.5-flash',
     name='input_validator_agent',
     instruction=(
         "Analyze the user's original query and the extracted crop and state. "
@@ -93,15 +93,7 @@ async def input_validator(ctx: Context, node_input: FarmerInput) -> Event:
     
     # Algorithmic check against supported crops and states
     if crop not in VALID_CROPS or state not in VALID_STATES:
-        return Event(
-            route="invalid",
-            output=(
-                f"The user asked about the crop '{crop}' in the state '{state}'. "
-                f"This crop and/or state is not supported or recognized. "
-                f"Politely tell the user this specific crop or state is not supported, "
-                f"and list the supported crops."
-            ),
-        )
+        return Event(route="invalid", output="The requested crop or state is not supported or recognized.")
         
     # Get original query to check for overrides
     original_query = ""
@@ -123,39 +115,57 @@ async def input_validator(ctx: Context, node_input: FarmerInput) -> Event:
     
     return Event(route="valid", output=f"Look up market price for crop: {crop}, state: {state}")
 
-# 6. Market Data Node -- deterministic function call, no LLM involved.
-# This lookup is a pure data operation with no judgment required, so it runs as
-# a plain node instead of an LLM agent. This removes the MCP-session-timing race
-# condition and the risk of a model narrating a tool call instead of making one.
-import sys
-import json
-
+# 6. MCP Server Connection & Market Data Tool Agent
 current_file = os.path.abspath(__file__)
 current_dir = os.path.dirname(current_file)
 parent_dir = os.path.dirname(current_dir)
 farm2market_dir = os.path.join(parent_dir, "farm2market")
 
+# Locate market_server.py dynamically
 if os.path.exists(os.path.join(current_dir, "mcp_server", "market_server.py")):
-    mcp_server_dir = os.path.join(current_dir, "mcp_server")
+    mcp_cwd = os.path.join(current_dir, "mcp_server")
+    mcp_args = ["market_server.py"]
 elif os.path.exists(os.path.join(farm2market_dir, "mcp_server", "market_server.py")):
-    mcp_server_dir = os.path.join(farm2market_dir, "mcp_server")
+    mcp_cwd = os.path.join(farm2market_dir, "mcp_server")
+    mcp_args = ["market_server.py"]
 elif os.path.exists(os.path.join(parent_dir, "mcp_server", "market_server.py")):
-    mcp_server_dir = os.path.join(parent_dir, "mcp_server")
+    mcp_cwd = os.path.join(parent_dir, "mcp_server")
+    mcp_args = ["market_server.py"]
 else:
-    mcp_server_dir = os.path.join(os.getcwd(), "mcp_server")
+    mcp_cwd = os.path.join(os.getcwd(), "mcp_server")
+    mcp_args = ["market_server.py"]
 
-if mcp_server_dir not in sys.path:
-    sys.path.insert(0, mcp_server_dir)
+# Resolve the python executable of the virtual environment to ensure libraries like fastmcp are available
+venv_python = os.path.join(parent_dir, "venv", "Scripts", "python.exe")
+if not os.path.exists(venv_python):
+    venv_python = os.path.join(parent_dir, "venv", "bin", "python")
+if not os.path.exists(venv_python):
+    venv_python = "python"
 
-from market_server import get_market_price as _get_market_price_fn
+mcp_toolset = McpToolset(
+    connection_params=StdioConnectionParams(
+        server_params=StdioServerParameters(
+            command=venv_python,
+            args=mcp_args,
+            cwd=mcp_cwd,
+        )
+    )
+)
 
-
-@node(rerun_on_resume=True)
-async def market_data_tool(ctx: Context, node_input: Any) -> Event:
-    crop = ctx.state.get("crop", "")
-    state = ctx.state.get("state", "")
-    result = _get_market_price_fn(crop=crop, state=state)
-    return Event(output=json.dumps(result))
+market_data_tool = Agent(
+    model='gemini-2.5-flash',
+    name='market_data_tool',
+    instruction=(
+        "You are a market database access assistant. "
+        "Your task is to fetch the price of the crop in the given state. "
+        "You must call the get_market_price tool with the exact crop and state names. "
+        "After receiving the tool result, you MUST output a final text response "
+        "containing the exact JSON result of the tool call. Always produce text output, "
+        "never end your turn without writing out the tool result as text."
+    ),
+    tools=[mcp_toolset],
+    include_contents='none',
+)
 
 # 7. Recommendation Agent
 def get_recommendation_instruction(ctx: ReadonlyContext) -> str:
@@ -163,8 +173,6 @@ def get_recommendation_instruction(ctx: ReadonlyContext) -> str:
     state = ctx.state.get("state", "unknown state")
     quantity = ctx.state.get("quantity", "unknown quantity")
     return (
-        "CRITICAL RULE: You will be given tool output data. If that data is missing, malformed, contains an error field, or is not an actual price result (for example, if it looks like a function call description rather than real returned data), you MUST NOT invent, guess, or assume any price, date, or market count. Instead, respond honestly: tell the farmer you were unable to retrieve current price data and ask them to try again. Never fabricate numbers under any circumstance, even to demonstrate formatting. "
-        
         "You are an expert agricultural market advisor for Nigerian farmers. "
         f"The farmer has asked for market price advice regarding selling {quantity} of {crop} in {state} State.\n\n"
         "Analyze the tool output provided as input (which contains the current market price and details). "
@@ -174,7 +182,7 @@ def get_recommendation_instruction(ctx: ReadonlyContext) -> str:
     )
 
 recommendation_agent = Agent(
-    model='gemma-4-26b-a4b-it',
+    model='gemini-2.5-flash',
     name='recommendation_agent',
     instruction=get_recommendation_instruction,
 )
