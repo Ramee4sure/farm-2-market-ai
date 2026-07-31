@@ -122,7 +122,7 @@ source venv/bin/activate
 ### 4. Install dependencies
 
 ```bash
-pip install google-adk mcp pandas
+pip install -r requirements.txt
 ```
 
 ### 5. Configure your API key
