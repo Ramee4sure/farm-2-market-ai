@@ -66,7 +66,10 @@ farmer_input_agent = Agent(
     name='farmer_input_agent',
     instruction=(
         "Extract the crop, state, and approximate quantity from the user conversation. "
-        "If a field is not provided, make a best guess or fill in 'unknown'."
+        "If a field is not provided, make a best guess or fill in 'unknown'. "
+        "Output ONLY the raw JSON object matching the schema - no markdown code fences, "
+        "no explanation, no extra text before or after the JSON."
+    ),
     ),
     output_schema=FarmerInput,
 )
