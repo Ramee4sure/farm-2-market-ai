@@ -70,7 +70,6 @@ farmer_input_agent = Agent(
         "Output ONLY the raw JSON object matching the schema - no markdown code fences, "
         "no explanation, no extra text before or after the JSON."
     ),
-    ),
     output_schema=FarmerInput,
 )
 
